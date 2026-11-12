@@ -409,10 +409,13 @@ body.kiosk footer{display:none}
    </div>
    <div>
     <div class="panel">
-     <h2>الاتصال المباشر بالهواتف</h2>
-     <p class="mute" style="margin:0 0 8px;font-size:16px">تستخدم المسابقة وسيط مراسلة عبر الإنترنت (MQTT)، بالطريقة نفسها التي تعتمدها منصة تحدي مسلمات الرمضاني. لا يلزم إنشاء مشروع Firebase أو إدخال إعدادات. افتح لوحة المقدم أولاً، ثم امسح المشاركون رمز QR الظاهر في شاشة العرض.</p>
-     <div class="note" id="cfgMsg">يتم اختيار خادم الاتصال تلقائياً عند فتح المسابقة. يلزم اتصال الإنترنت على جهاز المقدم وهواتف المشاركين.</div>
-     <p class="mute" style="font-size:14px;margin:8px 0 0">تنبيه: الاتصال يستخدم وسيطاً عاماً؛ استخدم رمز غرفة غير متوقع، ولا تُدخل بيانات شخصية أو حساسة.</p>
+     <h2>ربط الهواتف عبر Firebase</h2>
+     <p class="mute" style="margin:0 0 6px;font-size:16px">من دون هذا الربط تعمل المنصة في «الوضع المحلي» على نوافذ هذا المتصفح فقط (مناسب للتجربة). لربط هواتف المشاركين: أنشئ مشروع Firebase، فعّل Realtime Database وتسجيل الدخول المجهول Anonymous، ثم الصق إعداد تطبيق الويب هنا والصق القواعد أدناه في تبويب Rules.</p>
+     <div class="field"><label for="nCfg">إعداد Firebase Web App</label><textarea id="nCfg" class="ltr" style="direction:ltr;text-align:left;min-height:120px" placeholder='{"apiKey":"...","databaseURL":"https://...","projectId":"...","appId":"..."}'></textarea></div>
+     <div class="row"><button class="btn pri" onclick="saveCfg()">حفظ والاتصال</button><button class="btn warn" onclick="clearCfg()">العودة للوضع المحلي</button></div>
+     <div class="note hidden" id="cfgMsg"></div>
+     <div class="row" style="margin-top:10px"><span class="lbl grow">قواعد الحماية لقاعدة البيانات</span><button class="btn sm" onclick="copyRules()">نسخ القواعد</button></div>
+     <pre id="rulesBox"></pre>
     </div>
    </div>
   </div>
@@ -424,6 +427,8 @@ body.kiosk footer{display:none}
 <footer>تحدي المليون • الإصدار ٢٫٠</footer>
 <script>
 'use strict';
+/* ضع هنا إعداد Firebase لتثبيته داخل الملف (اختياري)، فتصبح روابط الدخول قصيرة:
+   const EMBEDDED_CONFIG={apiKey:"...",databaseURL:"https://...",projectId:"...",appId:"..."}; */
 const EMBEDDED_CONFIG=null;
 
 /* ============ أدوات عامة ============ */
@@ -493,12 +498,12 @@ const DEFAULT_BANK=[
 /* ============ الحالة العامة ============ */
 const QS=new URLSearchParams(location.search);
 function cfgFromParam(){try{const c=QS.get('c');return c?JSON.parse(b64u.dec(c)):null}catch(e){return null}}
-let CFG=null;
+let CFG=EMBEDDED_CONFIG||cfgFromParam()||store.get('mln_cfg',null);
 const KIOSK=QS.has('join')?'play':QS.has('screen')?'screen':'';
 const normRoom=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9_-]/g,'').slice(0,20);
 let ROOM=normRoom(QS.get('join')||QS.get('screen')||store.get('mln_room',''));
 if(!ROOM&&!KIOSK){ROOM=newRoomCode();store.set('mln_room',ROOM)}
-
+if(KIOSK&&cfgFromParam())store.set('mln_cfg',CFG);
 const DEF_SET={title:'تحدي المليون',sub:'من سيربح القمة؟',count:15,dur:25,life:{fifty:true,audience:true,time:true,second:true},allowChange:false,needNum:false,shuffle:true,cats:[],schedule:''};
 let S=Object.assign({},DEF_SET,store.get('mln_settings',{}));S.life=Object.assign({},DEF_SET.life,S.life||{});
 let bank=store.get('mln_bank',null)||clean(DEFAULT_BANK);
@@ -512,14 +517,16 @@ const joinUrl=()=>baseUrl()+'?join='+ROOM+cfgParam();
 const screenUrl=()=>baseUrl()+'?screen='+ROOM+cfgParam();
 const now=()=>db?db.now():Date.now();
 
-/* ============ قناة البيانات: MQTT عبر وسيط عام (مثل تحدي مسلمات الرمضاني) ============ */
+/* ============ قناة البيانات: محلية أو Firebase ============ */
 function getPath(t,p){if(!p)return t;for(const k of p.split('/')){if(t==null||typeof t!=='object')return null;t=t[k]}return t==null?null:t}
 function setPath(t,p,v){const ks=p.split('/');let o=t;for(let i=0;i<ks.length-1;i++){if(o[ks[i]]==null||typeof o[ks[i]]!=='object')o[ks[i]]={};o=o[ks[i]]}const k=ks[ks.length-1];if(v==null)delete o[k];else o[k]=v}
 class LocalDB{
- constructor(room){this.key='mln_db_'+room;this.ls=[];let u=sessionStorage.getItem('mln_uid');if(!u){u='L'+rid(10);sessionStorage.setItem('mln_uid',u)}this.uid=u;this.cloud=false;try{this.bc=new BroadcastChannel(this.key);this.bc.onmessage=()=>this._fire()}catch(e){}window.addEventListener('storage',e=>{if(e.key===this.key)this._fire()})}
+ constructor(room){this.key='mln_db_'+room;this.ls=[];let u=sessionStorage.getItem('mln_uid');if(!u){u='L'+rid(10);sessionStorage.setItem('mln_uid',u)}this.uid=u;this.cloud=false;
+  try{this.bc=new BroadcastChannel(this.key);this.bc.onmessage=()=>this._fire()}catch(e){}
+  window.addEventListener('storage',e=>{if(e.key===this.key)this._fire()})}
  _load(){try{return JSON.parse(localStorage.getItem(this.key))||{}}catch(e){return{}}}
  _save(t){localStorage.setItem(this.key,JSON.stringify(t));try{this.bc&&this.bc.postMessage(1)}catch(e){}this._fire(t)}
- set(p,v){const t=this._load();if(p)setPath(t,p,v==null?null:clean(v));else Object.keys(t).forEach(k=>delete t[k]);this._save(t);return Promise.resolve()}
+ set(p,v){const t=this._load();setPath(t,p,v==null?null:clean(v));this._save(t);return Promise.resolve()}
  update(p,o){const t=this._load();for(const k in o)setPath(t,(p?p+'/':'')+k,o[k]==null?null:clean(o[k]));this._save(t);return Promise.resolve()}
  get(p){return Promise.resolve(getPath(this._load(),p))}
  on(p,cb){this.ls.push({p,cb,last:undefined});setTimeout(()=>this._fire(),0)}
@@ -527,34 +534,38 @@ class LocalDB{
  _fire(t){t=t||this._load();for(const l of this.ls){const v=getPath(t,l.p);if(l.child){const o=v||{};for(const k in o){const s=JSON.stringify(o[k]);if(l.last[k]!==s){l.last[k]=s;l.cb(k,o[k])}}for(const k in l.last)if(!(k in o))delete l.last[k]}else{const s=JSON.stringify(v);if(s!==l.last){l.last=s;l.cb(v)}}}}
  now(){return Date.now()} stamp(){return Date.now()} presence(p){this.set(p,true)}
 }
-const MQTT_BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt','wss://mqtt.eclipseprojects.io:443/mqtt','wss://test.mosquitto.org:8081/mqtt'];
-class MQTTDB{
- static async create(room){
-  if(!window.mqtt) {try{await loadScript('https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js')}catch(e){await loadScript('https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js')}}
-  let client=null,chosen='';
-  for(const url of MQTT_BROKERS){const c=mqtt.connect(url,{clientId:'million_'+rid(10),clean:true,keepalive:30,reconnectPeriod:2000,connectTimeout:8000});const ok=await new Promise(resolve=>{const timer=setTimeout(()=>resolve(false),8500);c.once('connect',()=>{clearTimeout(timer);resolve(true)});c.once('error',()=>{clearTimeout(timer);resolve(false)})});if(ok){client=c;chosen=url;break}try{c.end(true)}catch(e){}}
-  if(!client)throw new Error('تعذر الاتصال بخوادم المسابقة. جرّب شبكة إنترنت أخرى ثم أعد المحاولة.');
-  const d=new MQTTDB();d.client=client;d.room=room;d.uid='M'+rid(12);d.cloud=true;d.root='muslmat-million/v1/'+room+'/';d.cache={};d.listeners=[];d.connected=true;
-  client.on('message',(topic,buf)=>{if(!topic.startsWith(d.root))return;const path=topic.slice(d.root.length);if(!path)return;let value=null;try{value=buf.length?JSON.parse(buf.toString()):null}catch(e){return}if(value===null){const parts=path.split('/');let obj=d.cache;for(let i=0;i<parts.length-1;i++){if(!obj[parts[i]])return;obj=obj[parts[i]]}delete obj[parts[parts.length-1]]}else setPath(d.cache,path,value);d._fire(path)});
-  await new Promise((resolve,reject)=>{client.subscribe(d.root+'#',{qos:1},err=>err?reject(err):resolve())});
-  client.on('close',()=>{d.connected=false;setConn('err','انقطع الاتصال؛ تجري إعادة المحاولة…')});client.on('reconnect',()=>setConn('','إعادة الاتصال…'));client.on('connect',()=>{d.connected=true;client.subscribe(d.root+'#',{qos:1});setConn('ok')});
-  d.broker=chosen;await new Promise(r=>setTimeout(r,450));return d;
- }
- _fire(changed){for(const l of this.listeners){if(l.child){if(changed.startsWith(l.p+'/')){const rest=changed.slice(l.p.length+1),key=rest.split('/')[0];if(key&&this.cache[l.p]&&Object.prototype.hasOwnProperty.call(this.cache[l.p],key))l.cb(key,this.cache[l.p][key])}}else if(changed===l.p||changed.startsWith(l.p+'/')||l.p.startsWith(changed+'/'))l.cb(getPath(this.cache,l.p))}}
- _topic(p){return this.root+p}
- set(p,v){return new Promise((resolve,reject)=>{const topic=this._topic(p);const payload=v==null?'':JSON.stringify(clean(v));this.client.publish(topic,payload,{qos:1,retain:true},e=>e?reject(e):resolve())})}
- update(p,o){return Promise.all(Object.entries(o).map(([k,v])=>this.set((p?p+'/':'')+k,v)))}
- get(p){return Promise.resolve(getPath(this.cache,p))}
- on(p,cb){this.listeners.push({p,cb,child:false});setTimeout(()=>cb(getPath(this.cache,p)),250)}
- onChild(p,cb){this.listeners.push({p,cb,child:true});setTimeout(()=>{const v=getPath(this.cache,p)||{};Object.entries(v).forEach(([k,x])=>cb(k,x))},250)}
- now(){return Date.now()} stamp(){return Date.now()} presence(p){this.set(p,true);this.client.on('offline',()=>this.set(p,false).catch(()=>{}));this.client.on('close',()=>this.set(p,false).catch(()=>{}));this.client.on('connect',()=>this.set(p,true).catch(()=>{}));}
+function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=()=>rej(new Error('تعذر تحميل مكتبة Firebase. تحقق من اتصال الإنترنت.'));document.head.appendChild(s)})}
+class FireDB{
+ static async create(cfg,room){
+  if(!cfg.apiKey||!cfg.databaseURL)throw new Error('إعداد Firebase ناقص: يلزم apiKey و databaseURL.');
+  if(!window.firebase){const B='https://www.gstatic.com/firebasejs/10.14.1/firebase-';await loadScript(B+'app-compat.js');await loadScript(B+'auth-compat.js');await loadScript(B+'database-compat.js')}
+  const app=firebase.apps.find(a=>a.name==='million')||firebase.initializeApp(cfg,'million'),auth=app.auth();
+  await new Promise(r=>{const off=auth.onAuthStateChanged(()=>{off();r()})});
+  if(!auth.currentUser)await auth.signInAnonymously();
+  const d=new FireDB();d.cloud=true;d.uid=auth.currentUser.uid;d.fdb=app.database();d.root=d.fdb.ref('rooms/'+room);d.off=0;
+  d.fdb.ref('.info/serverTimeOffset').on('value',s=>{d.off=s.val()||0});return d}
+ ref(p){return p?this.root.child(p):this.root}
+ set(p,v){return this.ref(p).set(v==null?null:v)}
+ update(p,o){return this.ref(p).update(o)}
+ get(p){return this.ref(p).once('value').then(s=>s.val())}
+ on(p,cb){this.ref(p).on('value',s=>cb(s.val()),e=>setConn('err','تعذرت القراءة: '+e.message))}
+ onChild(p,cb){const r=this.ref(p),f=s=>cb(s.key,s.val());r.on('child_added',f,e=>setConn('err','تعذرت القراءة: '+e.message));r.on('child_changed',f)}
+ now(){return Date.now()+this.off}
+ stamp(){return firebase.database.ServerValue.TIMESTAMP}
+ presence(p){this.fdb.ref('.info/connected').on('value',s=>{if(s.val()){const r=this.ref(p);r.onDisconnect().set(false);r.set(true)}})}
 }
-function setConn(k,msg){const c=$('conn');c.className='conn '+(k||'');c.textContent=msg||(k==='ok'?'متصل • غرفة '+ROOM:(db&&db.cloud?'الاتصال عبر وسيط مباشر':'وضع محلي • غرفة '+ROOM))}
+function setConn(k,msg){const c=$('conn');c.className='conn '+(k||'');c.textContent=msg||(k==='ok'?(db&&db.cloud?'متصل • غرفة '+ROOM:'وضع محلي • غرفة '+ROOM):'غير متصل')}
 let connecting=null;
 function connect(){
- if(connecting)return connecting;if(!ROOM)return Promise.reject(new Error('أدخل رمز الغرفة.'));
- connecting=(async()=>{db=await MQTTDB.create(ROOM);db.on('pub',v=>{pub=v;onPub()});db.on('live',v=>{live=v||{};renderLive()});setConn('ok');return db})();
- connecting.catch(e=>{connecting=null;db=null;setConn('err',e.message||String(e))});return connecting}
+ if(connecting)return connecting;
+ if(!ROOM)return Promise.reject(new Error('أدخل رمز الغرفة.'));
+ connecting=(async()=>{
+  db=CFG?await FireDB.create(CFG,ROOM):new LocalDB(ROOM);
+  db.on('pub',v=>{pub=v;onPub()});
+  db.on('live',v=>{live=v||{};renderLive()});
+  setConn('ok');return db})();
+ connecting.catch(e=>{connecting=null;db=null;setConn('err',e.message||String(e))});
+ return connecting}
 
 /* ============ الصوت والاحتفال ============ */
 let soundOn=false,actx=null;
@@ -775,7 +786,7 @@ function onPub(){
   if(view==='play'&&ME.joined){if(ph==='reveal'&&pub.correct>=0){(L.c===pub.correct?cue.ok:cue.bad)()}if(ph==='finished')celebrate();if(ph==='question'&&navigator.vibrate)try{navigator.vibrate(60)}catch(e){}}}
  lastSig=sig;if(ME.joined)syncLocal();render()}
 function render(){
- $('homeRoom').textContent=ROOM||'—';$('homeMode').textContent='اتصال مباشر بالهواتف عبر الإنترنت';
+ $('homeRoom').textContent=ROOM||'—';$('homeMode').textContent=CFG?'الهواتف مرتبطة عبر Firebase':'الوضع المحلي: للتجربة على نوافذ هذا المتصفح فقط';
  if(view==='screen')renderScreen();else if(view==='play')renderPlay();else if(view==='host')renderHost();else if(view==='admin')renderAdmin();
  tick()}
 function optHTML(o,i,cls,btn,pct){const inner='<span><b>'+LET[i]+'</b><i>'+esc(o)+'</i>'+(pct!=null?'<em class="num">'+fmt(pct)+'٪</em>':'')+'</span>';return btn?'<button class="opt '+cls+'" '+btn+'>'+inner+'</button>':'<div class="opt '+cls+'">'+inner+'</div>'}
@@ -790,7 +801,7 @@ function renderScreen(){
  let body='';
  if(!p||p.phase==='lobby'){
   const url=joinUrl(),typed=(!CFG||EMBEDDED_CONFIG)&&location.protocol!=='file:';
-  body='<div class="lobby"><div class="qr">'+qrSVG(url)+'</div><div><h2>امسح الرمز بهاتفك واكتب اسمك</h2>'+(typed?'<div class="url">'+esc(baseUrl().replace(/^https?:\/\//,''))+'</div>':'')+'<div class="mute">رمز الغرفة</div><div class="code">'+esc(ROOM)+'</div><div class="sfoot" id="sSched" style="text-align:right"></div>'+''+'<div class="names" id="sNames"></div></div></div>';
+  body='<div class="lobby"><div class="qr">'+qrSVG(url)+'</div><div><h2>امسح الرمز بهاتفك واكتب اسمك</h2>'+(typed?'<div class="url">'+esc(baseUrl().replace(/^https?:\/\//,''))+'</div>':'')+'<div class="mute">رمز الغرفة</div><div class="code">'+esc(ROOM)+'</div><div class="sfoot" id="sSched" style="text-align:right"></div>'+(!CFG?'<div class="note">الوضع المحلي: الهواتف لا تتصل قبل ربط Firebase من «الإدارة».</div>':'')+'<div class="names" id="sNames"></div></div></div>';
  }else if(p.phase==='finished'){
   const b=list(p.board),pod=(i,c)=>b[i]?'<div class="pod '+c+'"><div class="pl">'+['المركز الأول','المركز الثاني','المركز الثالث'][i]+'</div><div class="nm">'+esc(b[i].n)+'</div><div class="pt num">'+fmt(b[i].s)+' نقطة • '+fmt(b[i].c)+' صحيحة</div></div>':'<div></div>';
   body=b.length?'<div class="million enter">الفائز بالمليون الافتراضي: '+esc(b[0].n)+'</div><div class="podium enter">'+pod(1,'p2')+pod(0,'p1')+pod(2,'p3')+'</div>'+(b.length>3?'<div class="board">'+b.slice(3,8).map((r,i)=>'<div class="brow" style="border-color:var(--line);background:#131a55cc"><span class="rk num">'+fmt(i+4)+'</span><span>'+esc(r.n)+'</span><small class="num">'+fmt(r.c)+' صحيحة</small><span class="sc num">'+fmt(r.s)+'</span></div>').join('')+'</div>':''):'<div class="million">انتهت المسابقة</div>';
@@ -915,10 +926,13 @@ function saveSettings(){
  store.set('mln_settings',S);fillSettings();if(HOST.on){if(H.phase==='lobby')prepRound();publish()}renderAdmin()}
 function savePin(){const v=$('sPin').value;if(v)store.set('mln_pin',b64u.enc(v));else store.del('mln_pin');$('sPin').value='';sessionStorage.setItem('mln_ok','1');toast(v?'حُفظ رمز القفل':'أُلغي رمز القفل')}
 function saveRoom(){const r=normRoom($('nRoom').value);if(!r)return toast('اكتب رمز غرفة بأحرف إنجليزية أو أرقام.');if(r===ROOM)return toast('هذه هي الغرفة الحالية.');if(HOST.on&&H.phase!=='lobby'&&H.phase!=='finished'&&!confirm('توجد مسابقة جارية في الغرفة الحالية. الانتقال إلى غرفة أخرى؟'))return;store.set('mln_room',r);location.href=baseUrl()}
-function saveCfg(){toast('لا يلزم إعداد Firebase في هذه النسخة.')}
-function clearCfg(){toast('الاتصال المباشر لا يستخدم Firebase.')}
-const RULES='';
-function copyRules(){}
+function saveCfg(){const msg=$('cfgMsg');msg.classList.remove('hidden');let t=$('nCfg').value.trim(),c;
+ try{const m=t.match(/\{[\s\S]*\}/);if(!m)throw 0;try{c=JSON.parse(m[0])}catch(e){c=JSON.parse(m[0].replace(/([{,]\s*)([A-Za-z_]\w*)\s*:/g,'$1"$2":').replace(/'/g,'"').replace(/,\s*}/g,'}'))}}catch(e){msg.className='note bad';msg.textContent='تعذرت قراءة الإعداد. الصق كائن firebaseConfig كما يظهر في Firebase Console.';return}
+ if(!c.apiKey||!c.databaseURL){msg.className='note bad';msg.textContent='الإعداد ينقصه apiKey أو databaseURL. تأكد من إنشاء Realtime Database ثم انسخ الإعداد من جديد.';return}
+ store.set('mln_cfg',c);location.href=baseUrl()}
+function clearCfg(){if(EMBEDDED_CONFIG)return toast('الإعداد مثبّت داخل الملف نفسه.');if(!confirm('فصل Firebase والعودة للوضع المحلي على هذا الجهاز؟'))return;store.del('mln_cfg');location.href=baseUrl()}
+const RULES=JSON.stringify({rules:{rooms:{$room:{".write":"auth != null && data.child('host').val() === auth.uid",host:{".read":"auth != null",".write":"auth != null && !data.exists() && newData.val() === auth.uid"},pub:{".read":"auth != null"},live:{".read":"auth != null"},players:{".read":"auth != null",$uid:{".write":"auth != null && auth.uid === $uid && !data.child('kicked').exists() && !newData.child('kicked').exists()",".validate":"!newData.child('name').exists() || (newData.child('name').isString() && newData.child('name').val().length <= 40)"}},answers:{".read":"auth != null && root.child('rooms').child($room).child('host').val() === auth.uid",$q:{$uid:{".write":"auth != null && auth.uid === $uid && root.child('rooms').child($room).child('pub').child('open').val() === $q",".validate":"newData.child('c').isNumber() && newData.child('c').val() >= 0 && newData.child('c').val() <= 3 && newData.child('t').isNumber() && newData.child('t').val() <= now && newData.child('t').val() > now - 1500"}}},help:{".read":"auth != null && root.child('rooms').child($room).child('host').val() === auth.uid",$uid:{".write":"auth != null && auth.uid === $uid"}},grant:{$uid:{".read":"auth != null && auth.uid === $uid"}},res:{$uid:{".read":"auth != null && auth.uid === $uid"}}}}}},null,2);
+function copyRules(){copyText(RULES)}
 function renderAdmin(){
  if(adminTab==='bank')renderBank();
  if(adminTab==='set'){const cs=cats();setHTML($('sCats'),cs.map(c=>'<label class="check"><input type="checkbox" value="'+esc(c)+'" '+(S.cats.includes(c)?'checked':'')+' onchange="saveSettings()"> '+esc(c)+'</label>').join(''));
@@ -928,7 +942,9 @@ function renderAdmin(){
  if(adminTab==='stats'){const st=HOST.on?H.stats:{};
   setHTML($('statRows'),Object.keys(st).map(Number).sort((a,b)=>a-b).map(i=>{const s=st[i],d=list(s.dist);return '<tr><td class="num">'+fmt(i+1)+'</td><td>'+esc(s.text)+'</td><td class="num">'+fmt(s.n)+' / '+fmt(s.of)+'</td><td class="num '+(s.n&&s.ok/s.n>=.5?'okc':'badc')+'">'+fmt(s.n?Math.round(s.ok*100/s.n):0)+'٪</td><td class="num">'+nf.format((s.avg/1000).toFixed(1))+' ث</td>'+[0,1,2,3].map(k=>'<td class="num '+(k===s.correct?'okc':'')+'">'+fmt(d[k]||0)+'</td>').join('')+'</tr>'}).join('')||'<tr><td colspan="9" class="mute">تظهر الإحصائيات بعد إغلاق أول سؤال.</td></tr>');
   const hs=store.get('mln_history',[]);setHTML($('histRows'),hs.map((s,i)=>'<tr><td class="num">'+new Date(s.at).toLocaleString('ar-u-nu-arab',{dateStyle:'medium',timeStyle:'short'})+'</td><td>'+esc(s.title)+'</td><td class="num">'+fmt(s.count)+'</td><td>'+esc(s.rows[0]?s.rows[0].name:'—')+'</td><td style="white-space:nowrap"><button class="btn sm" onclick="exportResults('+i+')">تنزيل CSV</button> <button class="btn sm warn" onclick="delHistory('+i+')">حذف</button></td></tr>').join('')||'<tr><td colspan="5" class="mute">تُحفظ هنا نتائج كل مسابقة عند إعلان الفائزين.</td></tr>')}
- if(adminTab==='net'){if(document.activeElement!==$('nRoom')&&!$('nRoom').value)$('nRoom').value=ROOM;$('lnJoin').value=joinUrl();$('lnScreen').value=screenUrl();setHTML($('netQr'),qrSVG(joinUrl()));$('netMode').textContent='الاتصال عبر وسيط MQTT عام؛ لا يلزم إعداد Firebase. يجب أن يكون جهاز المقدم وهواتف المشاركين متصلة بالإنترنت.'}}
+ if(adminTab==='net'){if(document.activeElement!==$('nRoom')&&!$('nRoom').value)$('nRoom').value=ROOM;$('lnJoin').value=joinUrl();$('lnScreen').value=screenUrl();setHTML($('netQr'),qrSVG(joinUrl()));setHTML($('rulesBox'),esc(RULES));
+  if(CFG&&!$('nCfg').value)$('nCfg').value=JSON.stringify(CFG,null,1);
+  $('netMode').textContent=CFG?(EMBEDDED_CONFIG?'إعداد Firebase مثبّت داخل الملف؛ الروابط قصيرة ويكفي رمز الغرفة للدخول.':'الروابط تحمل إعداد الاتصال العام، فتعمل على أي هاتف بمسح الرمز. لروابط أقصر ثبّت الإعداد في السطر EMBEDDED_CONFIG داخل الملف.'):(location.protocol==='file:'?'الملف مفتوح من الجهاز مباشرة: الروابط تعمل على هذا المتصفح فقط. ارفعه إلى موقع المدرسة أو GitHub Pages واربط Firebase لتدخل الهواتف.':'الوضع المحلي: الروابط تعمل على نوافذ هذا المتصفح فقط حتى تربط Firebase.')}}
 
 /* ============ المؤقت ============ */
 let lastSec=-1,wasOpen=false;
