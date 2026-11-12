@@ -365,9 +365,11 @@ const SERVER_MODE = !FORCE_MQTT && (params.get('server') === '1' || params.get('
 const IS_HOST = params.get('host') === '1';
 const API_BASE = location.origin;
 if (IS_HOST && params.get('hs')) { sessionStorage.setItem('tahadi_host_secret_'+ROOM, params.get('hs')); const cleanUrl=new URL(location.href); cleanUrl.searchParams.delete('hs'); history.replaceState({},'',cleanUrl); }
-const BROKERS = ['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt'];
+// public relay servers, tried in this order by the presenter's screen; the third one uses the ordinary HTTPS port (443), which restrictive networks usually allow
+const BROKERS = ['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt','wss://mqtt.eclipseprojects.io:443/mqtt','wss://test.mosquitto.org:8081/mqtt'];
 const BROKER_IDX = Math.min(Math.max(parseInt(params.get('b')||'0',10)||0,0),BROKERS.length-1);
 const BROKER_URL = params.get('broker') || BROKERS[BROKER_IDX];
+let ACTIVE_BROKER = BROKER_IDX;                       // the relay actually in use; phones get it through the join link (b=…)
 const LOCAL_TEST = params.get('transport') === 'local';
 const PREFIX = 'quranmuslmat-quiz-v1/';
 const SHAPES = ['▲','◆','●','■'];
@@ -408,7 +410,7 @@ function loadScript(srcs){
     tryNext(0);
   });
 }
-async function connectTransport(onMsg){
+async function connectTransport(onMsg, opt){
   let useServer = SERVER_MODE && !LOCAL_TEST;
   if (useServer){
     try { await loadScript(['/socket.io/socket.io.js']); }
@@ -432,7 +434,20 @@ async function connectTransport(onMsg){
   }
   if (LOCAL_TEST){const bc=new BroadcastChannel('quiz-local'),subs=[];bc.onmessage=e=>{if(subs.includes(e.data.topic))onMsg(e.data.topic,e.data.payload)};setNet('on');return{subscribe(t){if(!subs.includes(t))subs.push(t)},publish(t,p){bc.postMessage({topic:t,payload:p});if(subs.includes(t))onMsg(t,p)},onConnect(f){f()}}}
   await loadScript(['https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js','https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js']);
-  const client=mqtt.connect(BROKER_URL,{clientId:'qms_'+rid(10),clean:true,keepalive:30,reconnectPeriod:2000,connectTimeout:10000}),subs=new Set(),fns=[];
+  const mopts = () => ({clientId:'qms_'+rid(10),clean:true,keepalive:30,reconnectPeriod:2000,connectTimeout:10000});
+  let client = null; const subs=new Set(),fns=[];
+  if (opt && opt.pick && !params.get('broker')){             // presenter's screen: find a relay this network can reach, then put it in the phones' link
+    const order = [...new Set([opt.prefer, BROKER_IDX, ...BROKERS.keys()].filter(i => Number.isInteger(i) && BROKERS[i]))];
+    for (const i of order){
+      $('#netTxt').textContent = `جارٍ تجربة خادم الاتصال ${toAr(order.indexOf(i)+1)} من ${toAr(order.length)}…`;
+      const c = mqtt.connect(BROKERS[i], mopts());
+      const ok = await new Promise(res => { const t = setTimeout(() => res(false), 6000); c.once('connect', () => { clearTimeout(t); res(true); }); });
+      if (ok){ client = c; ACTIVE_BROKER = i; break; }
+      try { c.removeAllListeners(); c.on('error', () => {}); c.end(true); } catch(e){}
+    }
+    if (!client) throw new Error('تعذّر الاتصال بأي خادم مراسلة. يبدو أن هذه الشبكة تحجب هذا النوع من الاتصال؛ جرّبوا شبكة أخرى (مثل نقطة اتصال الهاتف) ثم أعيدوا المحاولة.');
+    setNet('on');
+  } else client = mqtt.connect(BROKER_URL, mopts());
   client.on('connect',()=>{setNet('on');subs.forEach(t=>client.subscribe(t,{qos:1}));fns.forEach(f=>f())});client.on('reconnect',()=>setNet('wait'));client.on('offline',()=>setNet('off'));client.on('close',()=>setNet('off'));client.on('error',()=>setNet('off'));client.on('message',(t,b)=>onMsg(t,b.toString()));
   return{subscribe(t){subs.add(t);if(client.connected)client.subscribe(t,{qos:1})},publish(t,p,r){client.publish(t,p,{qos:1,retain:!!r})},onConnect(f){fns.push(f);if(client.connected)f()}};
 }
@@ -842,7 +857,7 @@ function hostMain(qrReady){
       } catch(err){ alert('تعذّر قراءة الملف. تأكد أنه ملف أسئلة محفوظ من هذه الصفحة.'); }
     };
     $('#openRoom').onclick = openRoom;
-    if ($('#resumeBtn')) $('#resumeBtn').onclick = () => { G = saved; if (!G.gid) G.gid = rid(8); if (!G.mcKey){ G.mcKey = rid(10); G.mc = null; } if (!Array.isArray(G.removed)) G.removed = []; if (!G.answers) G.answers = {}; startNet().then(() => { renderPhase(); publishNow(); if (G.phase==='question') resumeTimer(); }).catch(() => { G = null; }); };
+    if ($('#resumeBtn')) $('#resumeBtn').onclick = () => { G = saved; if (!G.gid) G.gid = rid(8); if (!G.mcKey){ G.mcKey = rid(10); G.mc = null; } if (!Array.isArray(G.removed)) G.removed = []; if (!G.answers) G.answers = {}; $('#resumeBtn').disabled = true; $('#resumeBtn').textContent = 'جارٍ الاتصال…'; startNet().then(() => { renderPhase(); publishNow(); if (G.phase==='question') resumeTimer(); }).catch(() => { G = null; renderSetup(); }); };
     if ($('#dropBtn')) $('#dropBtn').onclick = () => { sdel('qms_game'); renderSetup(); };
   }
 
@@ -995,7 +1010,7 @@ function hostMain(qrReady){
   async function startNet(){
     T = PREFIX + G.room;                       // always follow the current room (a new room after a finished game gets a new topic)
     if (!net){
-      try { net = await connectTransport(onMsg); }
+      try { net = await connectTransport(onMsg, {pick:true, prefer:G.b}); G.b = ACTIVE_BROKER; saveGame(); }
       catch(e){ setNet('off'); alert(e && e.message && /[؀-ۿ]/.test(e.message) ? e.message : 'تعذّر تحميل مكتبة الاتصال. تأكد من اتصال الجهاز بالإنترنت ثم أعد تحميل الصفحة.'); throw e; }
       net.onConnect(() => publishNow());
     }
@@ -1109,14 +1124,15 @@ function hostMain(qrReady){
     sdel('qms_game');
     G = {gid: rid(8), mcKey: rid(10), mc: null, room: (IS_HOST ? ROOM : rid(5)), week:cfg.week, phase:'lobby', qi:-1, players:{}, answers:{}, qStart:0, seq:0, removed:[], qs: pickQuestions()};
     saveGame();
-    try { await startNet(); } catch(e){ G = null; sdel('qms_game'); return; }
+    const ob = $('#openRoom'); if (ob){ ob.disabled = true; ob.textContent = 'جارٍ الاتصال…'; }
+    try { await startNet(); } catch(e){ G = null; sdel('qms_game'); renderSetup(); return; }
     renderPhase(); publishNow();
   }
   function joinUrl(){
     const u = new URL(location.href); u.search = ''; u.hash = '';
     u.searchParams.set('room', G.room);
     if (!SERVER_MODE && !LOCAL_TEST) u.searchParams.set('mq', '1');
-    if (BROKER_IDX) u.searchParams.set('b', BROKER_IDX);
+    if (ACTIVE_BROKER) u.searchParams.set('b', ACTIVE_BROKER);
     if (params.get('broker')) u.searchParams.set('broker', params.get('broker'));
     if (LOCAL_TEST) u.searchParams.set('transport','local');
     return u.toString();
