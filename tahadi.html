@@ -347,6 +347,12 @@ label.f input[type=number]{border:1.5px solid var(--line);border-radius:10px;pad
 .thbadge{display:inline-block;margin-inline-start:6px;background:#d6a640;color:#0a2f25;border-radius:999px;padding:0 7px;font-size:11px;font-style:normal;font-weight:800}
 .thbadge.hidden{display:none}
 .school-logo{object-fit:contain}
+.wz-winners li{grid-template-columns:44px minmax(0,1fr)}
+.wz-winners .t{display:flex;flex-direction:column;gap:2px;min-width:0;text-align:start}
+.wz-winners .w{text-align:start;font-size:24px;line-height:1.35;overflow-wrap:break-word}
+.wz-winners .p{overflow-wrap:normal;word-break:normal}
+.wz-winners li:not(.empty) .p{font-size:13px;opacity:.75}
+.wz-winners li.empty .w{display:none}
 
 /* ---------- background themes ---------- */
 body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none}
@@ -1866,8 +1872,9 @@ function hostMain(qrReady){
       W.prizes.forEach((p,i) => {
         const w = W.winners[i], li = document.createElement('li');
         if (!w) li.className = 'empty';
-        li.innerHTML = `<span class="n">${toAr(i+1)}</span><span class="p"></span><span class="w"></span>`;
-        li.querySelector('.p').textContent = p; li.querySelector('.w').textContent = w ? w.value + (w.name ? ' · ' + w.name : '') : '—';
+        // a drawn row shows the winner only (the numbered badge already gives the order); the prize name stays as a small line under it
+        li.innerHTML = `<span class="n">${toAr(i+1)}</span><span class="t"><span class="w"></span><span class="p"></span></span>`;
+        li.querySelector('.p').textContent = p; li.querySelector('.w').textContent = w ? w.value + (w.name ? ' · ' + w.name : '') : '';
         ul.appendChild(li);
       });
       draw();
